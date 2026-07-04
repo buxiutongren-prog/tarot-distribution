@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>塔罗牌分销系统</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .hero { min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      background: linear-gradient(135deg, #2D1B4E 0%, #553C9A 40%, #6B46C1 100%); position: relative; overflow: hidden; }
+    .hero::before { content: ''; position: absolute; inset: 0; background:
+      radial-gradient(circle at 20% 30%, rgba(236,201,75,.1) 0%, transparent 50%),
+      radial-gradient(circle at 80% 70%, rgba(159,122,234,.15) 0%, transparent 50%); }
+    .hero-content { position: relative; text-align: center; color: #fff; max-width: 700px; padding: 20px; }
+    .hero-icon { font-size: 72px; margin-bottom: 16px; }
+    .hero h1 { font-size: 36px; font-weight: 800; margin-bottom: 12px; letter-spacing: 2px; }
+    .hero h1 span { color: #ECC94B; }
+    .hero p { font-size: 16px; opacity: .8; margin-bottom: 40px; }
+    .entry-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; max-width: 700px; margin: 0 auto; }
+    .entry-card { background: rgba(255,255,255,.1); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,.2);
+      border-radius: 16px; padding: 40px 24px; cursor: pointer; transition: all .3s; text-decoration: none; color: #fff; }
+    .entry-card:hover { background: rgba(255,255,255,.2); transform: translateY(-4px); border-color: #ECC94B; }
+    .entry-card .entry-icon { font-size: 48px; margin-bottom: 16px; }
+    .entry-card h3 { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+    .entry-card p { font-size: 14px; opacity: .7; }
+    .entry-card:hover { text-decoration: none; }
+    @media (max-width: 600px) { .entry-grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="hero">
+    <div class="hero-content">
+      <div class="hero-icon">🔮</div>
+      <h1>塔罗牌<span>分销系统</span></h1>
+      <p>多级代理分销 · 客户商城 · 订单管理 · 佣金结算</p>
+      <div class="entry-grid">
+        <a class="entry-card" href="/system.html">
+          <div class="entry-icon">🔐</div>
+          <h3>分销系统</h3>
+          <p>管理员与代理统一登录，管理商品、订单、代理、佣金</p>
+        </a>
+        <a class="entry-card" href="/shop.html">
+          <div class="entry-icon">🛒</div>
+          <h3>客户商城</h3>
+          <p>输入邀请码进入选购塔罗牌，24小时内发货</p>
+        </a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

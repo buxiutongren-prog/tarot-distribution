@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: tarot-distribution
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: BASE_URL
+        fromService:
+          type: web
+          name: tarot-distribution
+          property: url
+    databases:
+      - tarot-db
+
+databases:
+  - name: tarot-db
+    plan: free
+    version: 16
+    dbName: tarot_db
+    user: postgres

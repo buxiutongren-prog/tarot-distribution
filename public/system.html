@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>分销系统 - 塔罗牌</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div id="app"></div>
+  <script>
+    const API = '/api';
+    function getToken() { return localStorage.getItem('system_token'); }
+    function setToken(t) { localStorage.setItem('system_token', t); }
+    function clearToken() { localStorage.removeItem('system_token'); }
+    function toast(msg, type = 'success') {
+      const t = document.createElement('div'); t.className = `toast toast-${type}`; t.textContent = msg;
+      document.body.appendChild(t); setTimeout(() => t.remove(), 2500);
+    }
+    async function api(path, options = {}) {
+      const token = getToken();
+      if (!token) { clearToken(); location.hash = '#/login'; throw new Error('请先登录'); }
+      const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token };
+      const res = await fetch(API + path, { ...options, headers: { ...headers, ...options.headers } });
+      if (res.status === 401) { clearToken(); location.hash = '#/login'; throw new Error('登录已过期'); }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '请求失败');
+      return data;
+    }
+
+    let currentUser = null;
+    const isAdmin = () => currentUser && currentUser.role === 'admin';
+    const isAgent1 = () => currentUser && currentUser.role === 'agent1';
+
+    function statusText(s) { return { pending: '待发货', shipped: '已发货', completed: '已完成', cancelled: '已取消' }[s] || s; }
+    function formatTime(t) { return t ? t.replace('T', ' ').substring(0, 16) : ''; }
+
+    // ============ 路由 ============
+    function route() {
+      const hash = location.hash.slice(1) || '/login';
+      if (hash.startsWith('/register')) { renderRegister(); return; }
+      if (!getToken() || hash === '/login') { renderLogin(); return; }
+      if (!currentUser) { loadUser(); return; }
+
+      if (isAdmin()) {
+        if (hash === '/' || hash === '/dashboard') renderAdminDashboard();
+        else if (hash === '/products') renderProducts();
+        else if (hash === '/orders') renderAdminOrders();
+        else if (hash === '/agents') renderAgents();
+        else if (hash === '/invite-codes') renderInviteCodes();
+        else if (hash === '/notifications') renderAdminNotifications();
+        else renderAdminDashboard();
+      } else {
+        if (hash === '/' || hash === '/dashboard') renderAgentDashboard();
+        else if (hash === '/orders') renderAgentOrders();
+        else if (hash === '/commissions') renderCommissions();
+        else if (hash === '/invite') renderInvite();
+        else if (hash === '/sub-agents') renderSubAgents();
+        else if (hash === '/notifications') renderAgentNotifications();
+        else renderAgentDashboard();
+      }
+    }
+    window.addEventListener('hashchange', route);
+
+    async function loadUser() {
+      try { currentUser = await api('/auth/me'); route(); }
+      catch (e) { clearToken(); renderLogin(); }
+    }
+
+    // ============ 登录页 ============
+    function renderLogin() {
+      document.getElementById('app').innerHTML = `
+        <div class="login-page">
+          <div class="login-card">
+            <div class="login-icon">🔮</div>
+            <h2>分销系统</h2>
+            <p class="subtitle">管理员与代理统一登录</p>
+            <div class="form-group">
+              <label>用户名</label>
+              <input class="input" id="loginUser" placeholder="请输入用户名">
+            </div>
+            <div class="form-group">
+              <label>密码</label>
+              <input class="input" type="password" id="loginPass" placeholder="请输入密码" onkeydown="if(event.key==='Enter')doLogin()">
+            </div>
+            <button class="btn btn-primary btn-lg w-full" onclick="doLogin()">登录</button>
+            <p class="text-center text-muted mt-2" style="font-size:13px">想成为代理？<a href="#/register">注册成为代理</a></p>
+          </div>
+        </div>
+      `;
+    }
+
+    async function doLogin() {
+      const username = document.getElementById('loginUser').value.trim();
+      const password = document.getElementById('loginPass').value.trim();
+      if (!username || !password) return toast('请输入用户名和密码', 'error');
+      try {
+        const data = await fetch(API + '/auth/login', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        }).then(r => r.json());
+        if (data.error) throw new Error(data.error);
+        setToken(data.token);
+        currentUser = data.user;
+        location.hash = '/dashboard';
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // ============ 代理注册页 ============
+    function renderRegister() {
+      const hashParams = new URLSearchParams(location.hash.split('?')[1] || '');
+      const urlParams = new URLSearchParams(location.search);
+      const code = hashParams.get('code') || urlParams.get('code') || '';
+      document.getElementById('app').innerHTML = `
+        <div class="login-page">
+          <div class="login-card">
+            <div class="login-icon">📝</div>
+            <h2>代理注册</h2>
+            <p class="subtitle">通过邀请码注册成为二级代理</p>
+            <div class="form-group">
+              <label>邀请码</label>
+              <input class="input" id="regCode" placeholder="请输入邀请码" value="${code}" style="text-transform:uppercase">
+            </div>
+            <div class="form-group"><label>用户名（登录用）</label><input class="input" id="regUsername" placeholder="请设置登录用户名"></div>
+            <div class="form-group"><label>密码</label><input class="input" type="password" id="regPassword" placeholder="请设置登录密码"></div>
+            <div class="form-group"><label>姓名</label><input class="input" id="regName" placeholder="请输入您的姓名"></div>
+            <div class="form-group"><label>手机号（选填）</label><input class="input" id="regPhone" placeholder="请输入手机号"></div>
+            <button class="btn btn-primary btn-lg w-full" onclick="doRegister()">注册</button>
+            <p class="text-center text-muted mt-2" style="font-size:13px">已有账号？<a href="#/login">去登录</a></p>
+          </div>
+        </div>
+      `;
+    }
+
+    async function doRegister() {
+      const invite_code = document.getElementById('regCode').value.trim().toUpperCase();
+      const username = document.getElementById('regUsername').value.trim();
+      const password = document.getElementById('regPassword').value.trim();
+      const name = document.getElementById('regName').value.trim();
+      const phone = document.getElementById('regPhone').value.trim();
+      if (!invite_code || !username || !password || !name) return toast('请填写必填项', 'error');
+      try {
+        const btn = event.target; btn.disabled = true; btn.textContent = '注册中...';
+        const data = await fetch(API + '/auth/agent/register', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ invite_code, username, password, name, phone })
+        }).then(r => r.json());
+        if (data.error) throw new Error(data.error);
+        toast('注册成功！请登录');
+        setTimeout(() => location.hash = '/login', 1000);
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // ============ 侧边栏 ============
+    function sidebar(active) {
+      let items;
+      if (isAdmin()) {
+        items = [
+          { path: '/dashboard', icon: '📊', label: '仪表盘' },
+          { path: '/products', icon: '🃏', label: '商品管理' },
+          { path: '/orders', icon: '📦', label: '订单管理' },
+          { path: '/agents', icon: '👥', label: '代理管理' },
+          { path: '/invite-codes', icon: '🔗', label: '邀请码管理' },
+          { path: '/notifications', icon: '🔔', label: '消息通知' },
+        ];
+      } else {
+        items = [
+          { path: '/dashboard', icon: '📊', label: '仪表盘' },
+          { path: '/orders', icon: '📦', label: '订单管理' },
+          { path: '/commissions', icon: '💰', label: '我的佣金' },
+          { path: '/notifications', icon: '🔔', label: '消息通知' },
+          { path: '/invite', icon: '🔗', label: '邀请码' },
+        ];
+        if (isAgent1()) items.push({ path: '/sub-agents', icon: '👥', label: '下级代理' });
+      }
+
+      const roleLabel = isAdmin() ? '超级管理员' : (isAgent1() ? '一级代理' : '二级代理');
+      const logoText = isAdmin() ? '管理' : '分销';
+
+      return `
+        <div class="sidebar">
+          <div class="sidebar-logo">🔮 塔罗牌<span>${logoText}</span></div>
+          <nav class="sidebar-nav">
+            ${items.map(i => `<a href="#${i.path}" class="${active === i.path ? 'active' : ''}"><span class="nav-icon">${i.icon}</span>${i.label}</a>`).join('')}
+          </nav>
+          <div class="sidebar-footer">
+            <div style="margin-bottom:4px">${currentUser ? currentUser.name : ''}</div>
+            <div style="opacity:.7">${roleLabel}</div>
+            <div style="margin-top:8px"><a href="#" onclick="clearToken();location.reload()" style="color:rgba(255,255,255,.6)">退出登录</a></div>
+          </div>
+        </div>
+      `;
+    }
+
+    function layout(active, content) {
+      return `<div class="app-layout">${sidebar(active)}<div class="main-content">${content}</div></div>`;
+    }
+
+    function copyText(text) {
+      navigator.clipboard.writeText(text).then(() => toast('已复制到剪贴板')).catch(() => {
+        const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta);
+        ta.select(); document.execCommand('copy'); ta.remove(); toast('已复制到剪贴板');
+      });
+    }
+
+    // ================================================================
+    //  管理员页面
+    // ================================================================
+
+    // ---- 管理员仪表盘 ----
+    async function renderAdminDashboard() {
+      document.getElementById('app').innerHTML = layout('dashboard', '<div class="empty-state"><div class="empty-icon">⏳</div>加载中...</div>');
+      try {
+        const [d, notif] = await Promise.all([api('/admin/dashboard'), api('/admin/notifications')]);
+        document.getElementById('app').innerHTML = layout('dashboard', `
+          <div class="page-header"><h1>仪表盘</h1></div>
+          <div class="stats-grid">
+            <div class="stat-card"><div class="stat-icon">📦</div><div class="stat-label">订单总数</div><div class="stat-value">${d.totalOrders}</div></div>
+            <div class="stat-card"><div class="stat-icon">⏳</div><div class="stat-label">待发货</div><div class="stat-value orange">${d.pendingOrders}</div></div>
+            <div class="stat-card"><div class="stat-icon">🚚</div><div class="stat-label">已发货</div><div class="stat-value green">${d.shippedOrders}</div></div>
+            <div class="stat-card"><div class="stat-icon">💰</div><div class="stat-label">总销售额</div><div class="stat-value gold">¥${d.totalRevenue.toFixed(2)}</div></div>
+            <div class="stat-card"><div class="stat-icon">💸</div><div class="stat-label">总佣金支出</div><div class="stat-value purple">¥${d.totalCommissions.toFixed(2)}</div></div>
+            <div class="stat-card"><div class="stat-icon">👥</div><div class="stat-label">一级代理</div><div class="stat-value">${d.agent1Count}</div></div>
+            <div class="stat-card"><div class="stat-icon">👤</div><div class="stat-label">二级代理</div><div class="stat-value">${d.agent2Count}</div></div>
+            <div class="stat-card"><div class="stat-icon">🃏</div><div class="stat-label">在售商品</div><div class="stat-value">${d.productCount}</div></div>
+          </div>
+          ${d.pendingOrders > 0 ? `
+            <div class="card mb-2" style="background:#FFFAF0;border:1px solid #FEEBC8">
+              <div class="flex items-center gap-2">
+                <span style="font-size:24px">⚠️</span>
+                <div><strong>有 ${d.pendingOrders} 个订单待发货！</strong><br><span style="font-size:13px;color:var(--text-light)">请尽快处理，承诺24小时内发货</span></div>
+                <button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="location.hash='/orders'">去发货 →</button>
+              </div>
+            </div>
+          ` : ''}
+          <div class="card">
+            <h3 style="margin-bottom:16px">近7天订单趋势</h3>
+            ${d.trend.length === 0 ? '<div class="empty-state"><div class="empty-icon">📈</div>暂无数据</div>' : `
+              <div style="display:flex;align-items:flex-end;gap:12px;height:200px;padding:0 20px">
+                ${d.trend.map(t => {
+                  const maxCount = Math.max(...d.trend.map(x => x.count), 1);
+                  const h = (t.count / maxCount) * 160;
+                  return `<div style="flex:1;text-align:center">
+                    <div style="font-size:12px;color:var(--text-light);margin-bottom:4px">${t.count}单</div>
+                    <div style="height:${h}px;background:linear-gradient(180deg,var(--primary-light),var(--primary));border-radius:6px 6px 0 0;min-height:4px"></div>
+                    <div style="font-size:11px;color:var(--text-light);margin-top:4px">${t.date.substring(5)}</div>
+                  </div>`;
+                }).join('')}
+              </div>
+            `}
+          </div>
+        `);
+      } catch(e) { toast(e.message, 'error'); }
+    }
+
+    // ---- 商品管理 ----
+    async function renderProducts() {
+      document.getElementById('app').innerHTML = layout('products', '<div class="empty-state"><div class="empty-icon">⏳</div>加载中...</div>');
+      try {
+        const products = await api('/admin/products');
+        document.getElementById('app').innerHTML = layout('products', `
+          <div class="page-header"><h1>商品管理</h1><button class="btn btn-primary" onclick="openProductModal()">+ 添加商品</button></div>
+          <div class="card" style="padding:0;overflow:auto">
+            <table><thead><tr><th>ID</th><th>商品名称</th><th>描述</th><th>价格</th><th>库存</th><th>状态</th><th>操作</th></tr></thead><tbody>
+              ${products.map(p => `<tr>
+                <td>${p.id}</td>
+                <td><strong>${p.name}</strong></td>
+                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.description || '-'}</td>
+                <td class="text-gold">¥${p.price}</td>
+                <td>${p.stock}</td>
+                <td><span class="badge badge-${p.status === 'active' ? 'active' : 'disabled'}">${p.status === 'active' ? '在售' : '下架'}</span></td>
+                <td>
+                  <button class="btn btn-outline btn-sm" onclick="openProductModal(${p.id})">编辑</button>
+                  <button class="btn btn-ghost btn-sm" onclick="toggleProduct(${p.id}, '${p.status}')">${p.status === 'active' ? '下架' : '上架'}</button>
+                </td>
+              </tr>`).join('')}
+            </tbody></table>
+          </div>
+        `);
+      } catch(e) { toast(e.message, 'error'); }
+    }
+
+    let editingProductId = null;
+    async function openProductModal(id) {
+      editingProductId = id || null;
+      let p = { name: '', description: '', price: '', stock: 0, detail: '', status: 'active' };
+      if (id) {
+        const products = await api('/admin/products');
+        p = products.find(x => x.id === id) || p;
+      }
+      const modal = document.createElement('div');
+      modal.className = 'modal-overlay'; modal.id = 'prodModal';
+      modal.innerHTML = `
+        <div class="modal">
+          <div class="modal-header"><h3>${id ? '编辑商品' : '添加商品'}</h3><button class="btn btn-ghost" onclick="document.getElementById('prodModal').remove()">✕</button></div>
+          <div class="modal-body">
+            <div class="form-group"><label>商品名称 *</label><input class="input" id="pName" value="${p.name}"></div>
+            <div class="form-group"><label>简短描述</label><input class="input" id="pDesc" value="${p.description || ''}"></div>
+            <div class="form-group"><label>价格（元）*</label><input class="input" type="number" id="pPrice" value="${p.price}" step="0.01"></div>
+            <div class="form-group"><label>库存</label><input class="input" type="number" id="pStock" value="${p.stock}"></div>
+            <div class="form-group"><label>商品详情（支持换行）</label><textarea class="textarea" id="pDetail" style="min-height:120px">${p.detail || ''}</textarea></div>
+            <div class="form-group"><label>状态</label><select class="select" id="pStatus">
+              <option value="active" ${p.status === 'active' ? 'selected' : ''}>在售</option>
+              <option value="inactive" ${p.status === 'inactive' ? 'selected' : ''}>下架</option>
+            </select></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="document.getElementById('prodModal').remove()">取消</button>
+            <button class="btn btn-primary" onclick="saveProduct()">保存</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+    }
+
+    async function saveProduct() {
+      const data = {
+        name: document.getElementById('pName').value.trim(),
+        description: document.getElementById('pDesc').value.trim(),
+        price: parseFloat(document.getElementById('pPrice').value),
+        stock: parseInt(document.getElementById('pStock').value),
+        detail: document.getElementById('pDetail').value.trim(),
+        status: document.getElementById('pStatus').value
+      };
+      if (!data.name || !data.price) return toast('请填写商品名称和价格', 'error');
+      try {
+        if (editingProductId) {
+          await api(`/admin/products/${editingProductId}`, { method: 'PUT', body: JSON.stringify(data) });
+        } else {
+          await api('/admin/products', { method: 'POST', body: JSON.stringify(data) });
+        }
+        toast('保存成功'); document.getElementById('prodModal').remove(); renderProducts();
+      } catch(e) { toast(e.message, 'error'); }
+    }
+
+    async function toggleProduct(id, status) {
+      const newStatus = status === 'active' ? 'inactive' : 'active';
+      try {
+        const products = await api('/admin/products');
+        const p = products.find(x => x.id === id);
+        await api(`/admin/products/${id}`, { method: 'PUT', body: JSON.stringify({ ...p, status: newStatus }) });
+        toast(newStatus === 'active' ? '已上架' : '已下架'); renderProducts();
+      } catch(e) { toast(e.message, 'error'); }
+    }
+
+    // ---- 管理员订单管理 ----
+    async function renderAdminOrders() {
+      document.getElementById('app').innerHTML = layout('orders', '<div class="empty-state"><div class="empty-icon">⏳</div>加载中...</div>');
+      try {
+        const orders = await api('/admin/orders');
+        document.getElementById('app').innerHTML = layout('orders', `
+          <div class="page-header"><h1>订单管理</h1></div>
+          <div class="card" style="padding:0;overflow:auto">
+            <table><thead><tr>
+              <th>订单号</th><th>商品</th><th>数量</th><th>总价</th><th>客户</th><th>电话</th><th>地址</th><th>代理</th><th>状态</th><th>快递单号</th><th>时间</th><th>操作</th>
+            </tr></thead><tbody>
+              ${orders.map(o => `<tr>
+                <td style="font-size:12px">${o.order_no}</td>
+                <td>${o.product_name}</td>
+                <td>${o.quantity}</td>
+                <td class="text-gold">¥${o.total_price}</td>
+                <td>${o.customer_name}</td>
+                <td style="font-size:12px">${o.customer_phone}</td>
+                <td style="font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${o.customer_address}">${o.customer_address}</td>
+                <td>${o.agent_name || '-'}<br><span style="font-size:11px;color:var(--text-light)">${o.agent_role === 'agent1' ? '一级' : '二级'}</span></td>
+                <td><span class="badge badge-${o.status}">${statusText(o.status)}</span></td>
+                <td style="font-size:12px">${o.tracking_no || '-'}</td>
+                <td style="font-size:12px">${formatTime(o.created_at)}</td>
+                <td>${o.status === 'pending' ? `<button class="btn btn-success btn-sm" onclick="openShipModal(${o.id}, '${o.order_no}')">发货</button>` : '-'}</td>
+              </tr>`).join('')}
+            </tbody></table>
+          </div>
+        `);
+      } catch(e) { toast(e.message, 'error'); }
+    }
+
+    let shippingOrderId = null;
+    function openShipModal(id, orderNo) {
+      shippingOrderId = id;
+      const modal = document.createElement('div');
+      modal.className = 'modal-overlay'; modal.id = 'shipModal';
+      modal.innerHTML = `
+        <div class="modal">
+          <div class="modal-header"><h3>订单发货 - ${orderNo}</h3><button class="btn btn-ghost" onclick="document.getElementById('shipModal').remove()">✕</button></div>
+          <div class="modal-body">
+            <div class="form-group"><label>快递公司</label>
+              <select class="select" id="shipCompany">
+                <option value="顺丰速运">顺丰速运</option>
+                <option value="中通快递">中通快递</option>
+                <option value="圆通快递">圆通快递</option>
+                <option value="韵达快递">韵达快递</option>
+                <option value="申通快递">申通快递</option>
+                <option value="极兔速递">极兔速递</option>
+                <option value="京东物流">京东物流</option>
+                <option value="EMS">EMS</option>
+              </select>
+            </div>
+            <div class="form-group"><label>快递单号 *</label><input class="input" id="shipNo" placeholder="请输入快递单号"></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="document.getElementById('shipModal').remove()">取消</button>
+            <button class="btn btn-success" onclick="doShip()">确认发货</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+    }
+
+    async function doShip() {
+      const tracking_no = document.getElementById('shipNo').value.trim();
+      const tracking_company = document.getElementById('shipCompany').value;
+      if (!tracking_no) return toast('请输入快递单号', 'error');
+      try {
+        await api(`/admin/orders/${shippingOrderId}/ship`, { method: 'PUT', body: JSON.stringify({ tracking_no, tracking_company }) });
+        toast('发货成功，已通知代理'); document.getElementById('shipModal').remove(); renderAdminOrders();
+      } catch(e) { toast(e.message, 'error'); }
+    }
+
+    // ---- 代理管理 ----
+    async function renderAgents() {
+      document.getElementById('app').innerHTML = layout('agents', '<div class="empty-state"><div class="empty-icon">⏳</div>加载中...</div>');
+      try {
+        const agents = await api('/admin/agents');
+        document.getElementById('app').innerHTML = layout('agents', `
+          <div class="page-header"><h1>代理管理</h1><button class="btn btn-primary" onclick="openAgentModal()">+ 创建一级代理</button></div>
+          <div class="card" style="padding:0;overflow:auto">
+            <table><thead><tr>
+              <th>用户名</th><th>姓名</th><th>角色</th><th>上级</th><th>佣金比例</th><th>邀请码</th><th>下级数</th><th>订单数</th><th>总佣金</th><th>状态</th><th>操作</th>
+            </tr></thead><tbody>
+              ${agents.map(a => `<tr>
+                <td>${a.username}</td>
+                <td>${a.name}</td>
+                <td><span class="badge badge-${a.role}">${a.role === 'agent1' ? '一级代理' : '二级代理'}</span></td>
+                <td>${a.parent_name || '-'}</td>
+                <td><span style="color:var(--primary);font-weight:700">${(a.commission_rate * 100).toFixed(1)}%</span></td>
+                <td style="font-size:12px">${a.invite_code}</td>
+                <td>${a.sub_agent_count}</td>
+                <td>${a.order_count}</td>
+                <td class="text-gold">¥${a.commission_total.toFixed(2)}</td>
+                <td><span class="badge badge-${a.status === 'deleted' ? 'cancelled' : a.status}">${a.status === 'active' ? '正常' : a.status === 'deleted' ? '已注销' : '禁用'}</span></td>
+                <td>
+                  <button class="btn btn-outline btn-sm" onclick="openAdminCommissionModal(${a.id}, '${a.name}', ${a.commission_rate}, '${a.role}')">设佣金</button>
+                  <button class="btn btn-ghost btn-sm" onclick="toggleAgent(${a.id}, '${a.status}')">${a.status === 'active' ? '禁用' : '启用'}</button>
+                  <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteAgent(${a.id}, '${a.name}', '${a.role}')">注销</button>
+                </td>
+              </tr>`).join('')}
+            </tbody></table>
+          </div>
+        `);
+      } catch(e) { toast(e.message, 'error'); }
+    }
+
+    function openAgentModal() {
+      const modal = document.createElement('div');
+      modal.className = 'modal-overlay'; modal.id = 'agentModal';
+      modal.innerHTML = `
+        <div class="modal">
+          <div class="modal-header"><h3>创建一级代理</h3><button class="btn btn-ghost" onclick="document.getElementById('agentModal').remove()">✕</button></div>
+          <div class="modal-body">
+            <div class="form-group"><label>用户名（登录用）*</label><input class="input" id="aUsername" placeholder="请设置登录用户名"></div>
+            <div class="form-group"><label>密码 *</label><input class="input" type="password" id="aPassword" placeholder="请设置登录密码"></div>
+            <div class="form-group"><label>姓名 *</label><input class="input" id="aName" placeholder="请输入代理姓名"></div>
+            <div class="form-group"><label>手机号</label><input class="input" id="aPhone" placeholder="请输入手机号"></div>
+            <div class="form-group"><label>佣金比例（%）*</label><input class="input" type="number" id="aRate" value="20" step="0.5" min="0" max="100">
+              <p class="text-muted mt-1" style="font-size:12px">一级代理的商品销售佣金比例，例如填20表示20%</p>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="document.getElementById('agentModal').remove()">取消</button>
+            <button class="btn btn-primary" onclick="createAgent()">创建</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+    }
+
+    async function createAgent() {
+      const data = {
+        username: document.getElementById('aUsername').value.trim(),
+        password: document.getElementById('aPassword').value.trim(),
+        name: document.getElementById('aName').value.trim(),
+        phone: document.getElementById('aPhone').value.trim(),
+        commission_rate: parseFloat(document.getElementById('aRate').value) / 100
+      };
+      if (!data.username || !data.password || !data.name) return toast('请填写必填项', 'error');
+      try {
+        const res = await api('/admin/agents', { method: 'POST', body: JSON.stringify(data) });
+        toast(`创建成功！邀请码：${res.invite_code}`); document.getElementById('agentModal').remove(); renderAgents();
+      } catch(e) { toast(e.message, 'error'); }
+    }
+
+    let editingAgentId = null;
+    function openAdminCommissionModal(id, name, currentRate, role) {
+      editingAgentId = id;
+      const modal = document.createElement('div');
+      modal.className = 'modal-overlay'; modal.id = 'commModal';
+      modal.innerHTML = `
+        <div class="modal">
+          <div class="modal-header"><h3>设置佣金比例 - ${name}（${role === 'agent1' ? '一级代理' : '二级代理'}）</h3><button class="btn btn-ghost" onclick="document.getElementById('commModal').remove()">✕</button></div>
+          <div class="modal-body">
+            <div class="form-group"><label>佣金比例（%）</label>
+              <input class="input" type="number" id="newCommRate" value="${(currentRate * 100).toFixed(1)}" step="0.5" min="0" max="100">
+              <p class="text-muted mt-1" style="font-size:12px">当前：${(currentRate * 100).toFixed(1)}%${role === 'agent1' ? '。修改一级代理佣金后，系统将自动调整不满足30%限制的二级代理佣金。' : ''}</p>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="document.getElementById('commModal').remove()">取消</button>
+            <button class="btn btn-primary" onclick="saveAgentCommission()">保存</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+    }
+
+    async function saveAgentCommission() {
+      const rate = parseFloat(document.getElementById('newCommRate').value) / 100;
+      try {
+        await api(`/admin/agents/${editingAgentId}/commission`, { method: 'PUT', body: JSON.stringify({ rate }) });
+        toast('佣金比例已更新'); document.getElementById('commModal').remove(); renderAgents();
+      } catch(e) { toast(e.message, 'error'); }
+    }
+
+    async function toggleAgent(id, status) {
+      const newStatus = status === 'active' ? 'disabled' : 'active';
+      try {
+        await api(`/admin/agents/${id}/status`, { method: 'PUT', body: JSON.stringify({ status: newStatus }) });
+        toast(newStatus === 'active' ? '已启用' : '已禁用'); renderAgents();
+      } catch(e) { toast(e.message, 'error'); }
+    }
+
+    async function deleteAgent(id, name, role) {
+      const msg = role === 'agent1'
+        ? `确定要注销代理「${name}」吗？\n\n⚠️ 该操作将同时注销其下所有二级代理，且不可恢复！`
+        : `确定要注销代理「${name}」吗？\n\n⚠️ 注销后该账号将无法登录，邀请码也将失效。此操作不可恢复！`;
+      if (!confirm(msg)) return;
+      try {
+        await api(`/admin/agents/${id}`, { method: 'DELETE' });
+        toast('已注销'); renderAgents();
+      } catch(e) { toast(e.message, 'error'); }
+    }
+
+    // ---- 邀请码管理 ----
+    async function renderInviteCodes() {
+      document.getElementById('app').innerHTML = layout('invite-codes', '<div class="empty-state"><div class="empty-icon">⏳</div>加载中...</div>');
+      try {
+        // 管理员只看自己的邀请码
+        const baseUrl = location.origin;
+        const myCode = currentUser.invite_code;
+        const regLink = `${baseUrl}/system.html#/register?code=${myCode}`;
+
+        // 获取管理员直邀的一级代理
+        const agents = await api('/admin/agents');
+        const myAgents = agents.filter(a => a.parent_id === currentUser.id);
+
+        document.getElementById('app').innerHTML = layout('invite-codes', `
+          <div class="page-header"><h1>我的邀请码</h1></div>
+          <div class="card mb-2" style="background:#FFFAF0;border:1px solid #FEEBC8">
+            <p style="font-size:13px;color:#C05621">💡 <strong>说明：</strong>将下面的邀请码或注册链接发给代理，他们注册后自动成为你的一级代理。你对他们的订单享有佣金分成（抽成不超过30%）。</p>
+          </div>
+          <div class="card mb-2">
+            <div style="display:flex;align-items:center;gap:12px;padding:16px;background:#F7FAFC;border-radius:10px">
+              <div style="font-size:13px;color:var(--text-light);white-space:nowrap">我的邀请码</div>
+              <div style="font-size:28px;font-weight:800;letter-spacing:3px;color:var(--primary)">${myCode}</div>
+              <button class="btn btn-outline btn-sm" onclick="copyText('${myCode}')">复制邀请码</button>
+              <button class="btn btn-ghost btn-sm" onclick="regenerateMyCode()" style="margin-left:auto;color:var(--warning)">↻ 重新生成</button>
+            </div>
+            <div class="card" style="background:#F0FFF4;border:1px solid #C6F6D5;margin-top:8px;padding:12px">
+              <div style="font-size:13px;font-weight:600;color:#276749;margin-bottom:6px">👥 一级代理注册链接</div>
+              <div style="display:flex;gap:8px">
+                <input class="input" value="${regLink}" readonly id="admin_reg_link">
+                <button class="btn btn-primary btn-sm" onclick="copyText(document.getElementById('admin_reg_link').value)">复制</button>
+              </div>
+            </div>
+          </div>
+          <div class="page-header mt-3"><h2>我的直属代理（${myAgents.length}人）</h2></div>
+          ${myAgents.length === 0 ? '<div class="empty-state"><div class="empty-icon">👥</div>暂无直属代理，快去邀请吧！</div>' : myAgents.map(a => `
+            <div class="card mb-2">
+              <div class="flex items-center gap-2">
+                <span class="badge badge-agent1">一级代理</span>
+                <strong>${a.name}</strong>
+                <span style="font-size:13px;color:var(--text-light)">@${a.username}</span>
+                <span style="font-size:13px;color:var(--primary);font-weight:600;margin-left:auto">佣金 ${(a.commission_rate*100).toFixed(1)}%</span>
+                <span class="badge ${a.status === 'active' ? 'badge-success' : 'badge-warning'}">${a.status === 'active' ? '正常' : '已禁用'}</span>
+              </div>
+              <div style="font-size:12px;color:var(--text-light);margin-top:4px">
+                订单 ${a.order_count || 0} 单 · 佣金 ¥${a.commission_total || 0} · 下级代理 ${a.sub_agent_count || 0} 人
+              </div>
+            </div>
+          `).join('')}
+        `);
+      } catch(e) { toast(e.message, 'error'); }
+    }
+
+    async function regenerateMyCode() {
+      if (!confirm('确定要重新生成你的邀请码吗？\n旧邀请码将立即失效，已分享的链接将无法使用。')) return;
+      try {
+        const res = await api(`/admin/agents/${currentUser.id}/regenerate-code`, { method: 'PUT', body: JSON.stringify({}) });
+        toast(`新邀请码：${res.invite_code}`);
+        currentUser.invite_code = res.invite_code;
+        renderInviteCodes();
+      } catch(e) { toast(e.message, 'error'); }
+    }
+
+    // ---- 管理员通知 ----
+    async function renderAdminNotifications() {
+      document.getElementById('app').innerHTML = layout('notifications', '<div class="empty-state"><div class="empty-icon">⏳</div>加载中...</div>');
+      try {
+        const data = await api('/admin/notifications');
+        document.getElementById('app').innerHTML = layout('notifications', `
+          <div class="page-header">
+            <h1>消息通知</h1>
+            ${data.unread_count > 0 ? `<button class="btn btn-outline btn-sm" onclick="adminMarkAllRead()">全部已读</button>` : ''}
+          </div>
+          <div class="card" style="padding:0">
+            ${data.list.length === 0 ? '<div class="empty-state"><div class="empty-icon">📭</div>暂无通知</div>' : data.list.map(n => `
+              <div class="notification-item ${n.is_read ? '' : 'unread'}" onclick="adminMarkRead(${n.id})">
+                <div class="notif-icon">${n.type === 'order' ? '📦' : n.type === 'shipping' ? '🚚' : '📢'}</div>
+                <div class="notif-content">
+                  <div class="notif-title">${n.title}</div>
+                  <div class="notif-text">${n.content}</div>
+                  <div class="notif-time">${formatTime(n.created_at)}</div>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        `);
+      } catch(e) { toast(e.message, 'error'); }
+    }
+
+    async function adminMarkRead(id) { try { await api(`/admin/notifications/${id}/read`, { method: 'PUT' }); } catch(e){} }
+    async function adminMarkAllRead() { try { await api('/admin/notifications/read-all', { method: 'PUT' }); toast('已全部标记为已读'); renderAdminNotifications(); } catch(e){} }
+
+    // ================================================================
+    //  代理页面
+    // ================================================================
+
+    // ---- 代理仪表盘 ----
+    async function renderAgentDashboard() {
+      document.getElementById('app').innerHTML = layout('dashboard', '<div class="empty-state"><div class="empty-icon">⏳</div>加载中...</div>');
+      try {
+        const [summary, notif] = await Promise.all([api('/agent/commissions/summary'), api('/agent/notifications')]);
+        const orders = await api('/agent/orders');
+        const recentOrders = orders.slice(0, 5);
+
+        document.getElementById('app').innerHTML = layout('dashboard', `
+          <div class="page-header"><h1>仪表盘</h1></div>
+          <div class="stats-grid">
+            <div class="stat-card"><div class="stat-icon">💰</div><div class="stat-label">佣金总额</div><div class="stat-value gold">¥${summary.grand_total.toFixed(2)}</div></div>
+            <div class="stat-card"><div class="stat-icon">✅</div><div class="stat-label">直接佣金</div><div class="stat-value green">¥${summary.direct_total.toFixed(2)}</div></div>
+            ${isAgent1() ? `<div class="stat-card"><div class="stat-icon">📊</div><div class="stat-label">间接佣金</div><div class="stat-value purple">¥${summary.indirect_total.toFixed(2)}</div></div>` : ''}
+            <div class="stat-card"><div class="stat-icon">📦</div><div class="stat-label">订单总数</div><div class="stat-value">${orders.length}</div></div>
+            <div class="stat-card"><div class="stat-icon">⏳</div><div class="stat-label">待结算</div><div class="stat-value orange">¥${summary.pending_total.toFixed(2)}</div></div>
+            <div class="stat-card"><div class="stat-icon">🔔</div><div class="stat-label">未读消息</div><div class="stat-value ${notif.unread_count > 0 ? 'orange' : ''}">${notif.unread_count}</div></div>
+          </div>
+          <div class="card">
+            <div class="flex justify-between items-center mb-2"><h3>最近订单</h3><a href="#/orders">查看全部 →</a></div>
+            ${recentOrders.length === 0 ? '<div class="empty-state"><div class="empty-icon">📭</div>暂无订单</div>' : `
+              <table><thead><tr><th>订单号</th><th>商品</th><th>客户</th><th>状态</th><th>我的佣金</th><th>时间</th></tr></thead><tbody>
+                ${recentOrders.map(o => `<tr>
+                  <td style="font-size:12px">${o.order_no}</td>
+                  <td>${o.product_name}</td>
+                  <td>${o.customer_name}</td>
+                  <td><span class="badge badge-${o.status}">${statusText(o.status)}</span></td>
+                  <td class="text-gold">¥${o.my_commission.toFixed(2)}</td>
+                  <td style="font-size:12px">${formatTime(o.created_at)}</td>
+                </tr>`).join('')}
+              </tbody></table>
+            `}
+          </div>
+        `);
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // ---- 代理订单管理 ----
+    async function renderAgentOrders() {
+      document.getElementById('app').innerHTML = layout('orders', '<div class="empty-state"><div class="empty-icon">⏳</div>加载中...</div>');
+      try {
+        const orders = await api('/agent/orders');
+        document.getElementById('app').innerHTML = layout('orders', `
+          <div class="page-header"><h1>订单管理</h1></div>
+          <div class="card">
+            ${orders.length === 0 ? '<div class="empty-state"><div class="empty-icon">📭</div>暂无订单</div>' : `
+              <table><thead><tr>
+                <th>订单号</th><th>商品</th><th>数量</th><th>客户</th><th>电话</th>
+                ${isAgent1() ? '<th>来源代理</th>' : ''}
+                <th>我的佣金</th><th>状态</th><th>快递单号</th><th>时间</th>
+              </tr></thead><tbody>
+                ${orders.map(o => `<tr>
+                  <td style="font-size:12px">${o.order_no}</td>
+                  <td>${o.product_name}</td>
+                  <td>${o.quantity}</td>
+                  <td>${o.customer_name}</td>
+                  <td style="font-size:12px">${o.customer_phone}</td>
+                  ${isAgent1() ? `<td>${o.agent_name || '我'}</td>` : ''}
+                  <td class="text-gold">¥${o.my_commission.toFixed(2)}${o.commission_level === 'indirect' ? '<br><span style="font-size:11px;color:var(--text-light)">(间接)</span>' : ''}</td>
+                  <td><span class="badge badge-${o.status}">${statusText(o.status)}</span></td>
+                  <td style="font-size:12px">${o.tracking_no || '-'}</td>
+                  <td style="font-size:12px">${formatTime(o.created_at)}</td>
+                </tr>`).join('')}
+              </tbody></table>
+            `}
+          </div>
+          <div class="card mt-2" style="background:#F0FFF4;border:1px solid #C6F6D5">
+            <p style="font-size:13px;color:#276749">💡 <strong>说明：</strong>您只能看到自己的佣金金额，无法查看商品售价。订单状态由系统管理员更新，发货后快递单号将显示在此处。</p>
+          </div>
+        `);
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // ---- 佣金管理 ----
+    async function renderCommissions() {
+      document.getElementById('app').innerHTML = layout('commissions', '<div class="empty-state"><div class="empty-icon">⏳</div>加载中...</div>');
+      try {
+        const [summary, list] = await Promise.all([api('/agent/commissions/summary'), api('/agent/commissions')]);
+        document.getElementById('app').innerHTML = layout('commissions', `
+          <div class="page-header"><h1>我的佣金</h1></div>
+          <div class="stats-grid">
+            <div class="stat-card"><div class="stat-icon">💰</div><div class="stat-label">佣金总额</div><div class="stat-value gold">¥${summary.grand_total.toFixed(2)}</div></div>
+            <div class="stat-card"><div class="stat-icon">⏳</div><div class="stat-label">待结算</div><div class="stat-value orange">¥${summary.pending_total.toFixed(2)}</div></div>
+            <div class="stat-card"><div class="stat-icon">✅</div><div class="stat-label">已结算</div><div class="stat-value green">¥${summary.settled_total.toFixed(2)}</div></div>
+            <div class="stat-card"><div class="stat-icon">📊</div><div class="stat-label">直接佣金</div><div class="stat-value">¥${summary.direct_total.toFixed(2)}</div></div>
+            ${isAgent1() ? `<div class="stat-card"><div class="stat-icon">🔗</div><div class="stat-label">间接佣金</div><div class="stat-value purple">¥${summary.indirect_total.toFixed(2)}</div></div>` : ''}
+          </div>
+          <div class="card">
+            <h3 style="margin-bottom:16px">佣金明细</h3>
+            ${list.length === 0 ? '<div class="empty-state"><div class="empty-icon">📭</div>暂无佣金记录</div>' : `
+              <table><thead><tr><th>订单号</th><th>商品</th><th>客户</th><th>类型</th><th>佣金比例</th><th>佣金金额</th><th>状态</th><th>时间</th></tr></thead><tbody>
+                ${list.map(c => `<tr>
+                  <td style="font-size:12px">${c.order_no}</td>
+                  <td>${c.product_name}</td>
+                  <td>${c.customer_name}</td>
+                  <td>${c.level === 'direct' ? '直接客户' : '下级代理'}</td>
+                  <td>${(c.rate * 100).toFixed(1)}%</td>
+                  <td class="text-gold">¥${c.amount.toFixed(2)}</td>
+                  <td><span class="badge ${c.status === 'settled' ? 'badge-active' : 'badge-pending'}">${c.status === 'settled' ? '已结算' : '待结算'}</span></td>
+                  <td style="font-size:12px">${formatTime(c.created_at)}</td>
+                </tr>`).join('')}
+              </tbody></table>
+            `}
+          </div>
+        `);
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // ---- 邀请码管理 ----
+    async function renderInvite() {
+      document.getElementById('app').innerHTML = layout('invite', '<div class="empty-state"><div class="empty-icon">⏳</div>加载中...</div>');
+      try {
+        const profile = await api('/agent/profile');
+        document.getElementById('app').innerHTML = layout('invite', `
+          <div class="page-header"><h1>邀请码</h1></div>
+          <div class="card mb-2">
+            <h3 style="margin-bottom:16px">我的邀请码</h3>
+            <div style="text-align:center;padding:20px;background:#F7FAFC;border-radius:12px;margin-bottom:16px">
+              <div style="font-size:36px;font-weight:800;letter-spacing:4px;color:var(--primary)">${profile.invite_code}</div>
+              <button class="btn btn-outline btn-sm mt-2" onclick="copyText('${profile.invite_code}')">复制邀请码</button>
+            </div>
+            <div class="card" style="background:#FFFAF0;border:1px solid #FEEBC8;margin-bottom:12px">
+              <h4 style="margin-bottom:8px;color:var(--warning)">🛒 客户商城链接</h4>
+              <p style="font-size:13px;color:var(--text-light);margin-bottom:8px">客户通过此链接进入商城，下单后佣金归您</p>
+              <div style="display:flex;gap:8px">
+                <input class="input" value="${profile.invite_link}" readonly id="shopLink">
+                <button class="btn btn-primary btn-sm" onclick="copyText(document.getElementById('shopLink').value)">复制</button>
+              </div>
+            </div>
+            ${isAgent1() ? `
+              <div class="card" style="background:#F0FFF4;border:1px solid #C6F6D5">
+                <h4 style="margin-bottom:8px;color:var(--success)">👥 下级代理注册链接</h4>
+                <p style="font-size:13px;color:var(--text-light);margin-bottom:8px">分享此链接给其他人，邀请他们成为您的二级代理</p>
+                <div style="display:flex;gap:8px">
+                  <input class="input" value="${profile.register_link}" readonly id="regLink">
+                  <button class="btn btn-primary btn-sm" onclick="copyText(document.getElementById('regLink').value)">复制</button>
+                </div>
+              </div>
+            ` : ''}
+          </div>
+          <div class="card">
+            <h3 style="margin-bottom:12px">如何使用</h3>
+            <div style="font-size:13px;color:var(--text-light);line-height:2">
+              ${isAgent1() ? `
+                <p>1. 将<strong>客户商城链接</strong>分享给您的客户，客户输入邀请码即可浏览和购买塔罗牌</p>
+                <p>2. 将<strong>下级代理注册链接</strong>分享给想成为代理的人，他们注册后自动成为您的二级代理</p>
+                <p>3. 在「下级代理」页面可以为每个二级代理设置佣金比例（您最多抽取其佣金的30%）</p>
+                <p>4. 二级代理的客户下单后，您将获得间接佣金，同时收到通知</p>
+              ` : `
+                <p>1. 将<strong>客户商城链接</strong>分享给您的客户，客户输入邀请码即可浏览和购买塔罗牌</p>
+                <p>2. 客户下单后您将收到通知，佣金将自动记录</p>
+                <p>3. 管理员发货后，快递单号将出现在订单管理页面，请转发给您的客户</p>
+              `}
+            </div>
+          </div>
+        `);
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // ---- 下级代理管理 ----
+    async function renderSubAgents() {
+      if (!isAgent1()) { location.hash = '/dashboard'; return; }
+      document.getElementById('app').innerHTML = layout('sub-agents', '<div class="empty-state"><div class="empty-icon">⏳</div>加载中...</div>');
+      try {
+        const [subs, profile] = await Promise.all([api('/agent/sub-agents'), api('/agent/profile')]);
+        const myRate = profile.commission_rate;
+        const minRate = (myRate / 1.3);
+
+        document.getElementById('app').innerHTML = layout('sub-agents', `
+          <div class="page-header">
+            <h1>下级代理管理</h1>
+            <div style="font-size:13px;color:var(--text-light)">
+              我的佣金比例：<strong style="color:var(--primary)">${(myRate * 100).toFixed(1)}%</strong> | 
+              二级代理最低佣金：<strong style="color:var(--gold)">${(minRate * 100).toFixed(1)}%</strong>（抽成上限30%）
+            </div>
+          </div>
+          <div class="card mb-2" style="background:#FFFAF0;border:1px solid #FEEBC8">
+            <p style="font-size:13px;color:#C05621">💡 <strong>佣金规则：</strong>您可以设置二级代理的佣金比例。您的佣金与二级代理佣金的差额即为您从每笔订单中"抽取"的部分，该抽取比例不得超过二级代理佣金的30%。</p>
+          </div>
+          <div class="card">
+            ${subs.length === 0 ? '<div class="empty-state"><div class="empty-icon">👥</div>暂无下级代理<br><p style="font-size:13px;margin-top:8px">在「邀请码」页面复制注册链接分享给他人</p></div>' : `
+              <table><thead><tr>
+                <th>用户名</th><th>姓名</th><th>电话</th><th>当前佣金比例</th><th>订单数</th><th>总佣金</th><th>状态</th><th>操作</th>
+              </tr></thead><tbody>
+                ${subs.map(s => `<tr>
+                  <td>${s.username}</td>
+                  <td>${s.name}</td>
+                  <td style="font-size:12px">${s.phone || '-'}</td>
+                  <td><span class="badge badge-agent2">${(s.commission_rate * 100).toFixed(1)}%</span></td>
+                  <td>${s.order_count}</td>
+                  <td class="text-gold">¥${s.total_commission.toFixed(2)}</td>
+                  <td><span class="badge badge-${s.status}">${s.status === 'active' ? '正常' : '禁用'}</span></td>
+                  <td><button class="btn btn-outline btn-sm" onclick="openSubCommissionModal(${s.id}, '${s.name}', ${s.commission_rate})">设置佣金</button></td>
+                </tr>`).join('')}
+              </tbody></table>
+            `}
+          </div>
+        `);
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    let editingSubId = null;
+    async function openSubCommissionModal(id, name, currentRate) {
+      const profile = await api('/agent/profile');
+      const myRate = profile.commission_rate;
+      const minRate = +(myRate / 1.3).toFixed(4);
+      editingSubId = id;
+      const modal = document.createElement('div');
+      modal.className = 'modal-overlay';
+      modal.id = 'subCommModal';
+      modal.innerHTML = `
+        <div class="modal">
+          <div class="modal-header"><h3>设置佣金比例 - ${name}</h3><button class="btn btn-ghost" onclick="document.getElementById('subCommModal').remove()">✕</button></div>
+          <div class="modal-body">
+            <div class="card mb-2" style="background:#F7FAFC">
+              <div class="flex justify-between" style="margin-bottom:6px"><span>您的佣金比例</span><strong style="color:var(--primary)">${(myRate * 100).toFixed(1)}%</strong></div>
+              <div class="flex justify-between" style="margin-bottom:6px"><span>二级代理最低佣金</span><strong style="color:var(--gold)">${(minRate * 100).toFixed(1)}%</strong></div>
+              <div class="flex justify-between"><span>当前佣金比例</span><strong>${(currentRate * 100).toFixed(1)}%</strong></div>
+            </div>
+            <div class="form-group">
+              <label>新的佣金比例（${(minRate * 100).toFixed(1)}% ~ ${(myRate * 100).toFixed(1)}%）</label>
+              <input class="input" type="number" id="newSubRate" value="${(currentRate * 100).toFixed(1)}" step="0.1" min="${(minRate * 100).toFixed(1)}" max="${(myRate * 100).toFixed(1)}">
+              <p class="text-muted mt-1" style="font-size:12px">您从该代理每单抽取：${(myRate * 100).toFixed(1)}% - 新比例 = <span id="diffDisplay" style="color:var(--gold);font-weight:700"></span></p>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="document.getElementById('subCommModal').remove()">取消</button>
+            <button class="btn btn-primary" onclick="saveSubCommission()">保存</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      const input = document.getElementById('newSubRate');
+      const diffEl = document.getElementById('diffDisplay');
+      function updateDiff() {
+        const r = parseFloat(input.value) / 100;
+        const diff = (myRate - r) * 100;
+        const ratio = r > 0 ? (diff / (r * 100) * 100) : 0;
+        diffEl.textContent = `${diff.toFixed(1)}%（占二级佣金 ${ratio.toFixed(1)}%）`;
+      }
+      input.oninput = updateDiff; updateDiff();
+    }
+
+    async function saveSubCommission() {
+      const rate = parseFloat(document.getElementById('newSubRate').value) / 100;
+      try {
+        await api(`/agent/sub-agents/${editingSubId}/commission`, { method: 'PUT', body: JSON.stringify({ rate }) });
+        toast('佣金比例已更新');
+        document.getElementById('subCommModal').remove();
+        renderSubAgents();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // ---- 代理通知 ----
+    async function renderAgentNotifications() {
+      document.getElementById('app').innerHTML = layout('notifications', '<div class="empty-state"><div class="empty-icon">⏳</div>加载中...</div>');
+      try {
+        const data = await api('/agent/notifications');
+        document.getElementById('app').innerHTML = layout('notifications', `
+          <div class="page-header">
+            <h1>消息通知</h1>
+            ${data.unread_count > 0 ? `<button class="btn btn-outline btn-sm" onclick="agentMarkAllRead()">全部已读</button>` : ''}
+          </div>
+          <div class="card" style="padding:0">
+            ${data.list.length === 0 ? '<div class="empty-state"><div class="empty-icon">📭</div>暂无通知</div>' : data.list.map(n => `
+              <div class="notification-item ${n.is_read ? '' : 'unread'}" onclick="agentMarkRead(${n.id})">
+                <div class="notif-icon">${n.type === 'order' ? '📦' : n.type === 'shipping' ? '🚚' : '📢'}</div>
+                <div class="notif-content">
+                  <div class="notif-title">${n.title}</div>
+                  <div class="notif-text">${n.content}</div>
+                  <div class="notif-time">${formatTime(n.created_at)}</div>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        `);
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    async function agentMarkRead(id) { try { await api(`/agent/notifications/${id}/read`, { method: 'PUT' }); } catch(e){} }
+    async function agentMarkAllRead() { try { await api('/agent/notifications/read-all', { method: 'PUT' }); toast('已全部标记为已读'); renderAgentNotifications(); } catch(e){} }
+
+    // 启动
+    route();
+  </script>
+</body>
+</html>

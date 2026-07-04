@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>塔罗牌商城</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <style>
+    .admin-bar { background: #2D3748; color: #fff; padding: 8px 20px; display: flex; align-items: center; gap: 12px; font-size: 13px }
+    .admin-bar .badge { background: #E53E3E; color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 11px }
+    .product-card-admin { position: relative }
+    .product-card-admin .card-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; opacity: 0; transition: opacity 0.2s }
+    .product-card-admin:hover .card-actions { opacity: 1 }
+    .btn-icon { width: 32px; height: 32px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center }
+    .btn-icon-edit { background: #4299E1; color: #fff }
+    .btn-icon-del { background: #F56565; color: #fff }
+    .btn-icon-toggle { background: #ECC94B; color: #fff; font-size: 12px }
+    .product-card.draft { opacity: 0.5; border: 2px dashed #CBD5E0 }
+    .image-upload { border: 2px dashed #CBD5E0; border-radius: 12px; padding: 24px; text-align: center; cursor: pointer; transition: border-color 0.2s }
+    .image-upload:hover { border-color: var(--primary) }
+    .image-preview { max-width: 200px; max-height: 200px; border-radius: 8px; margin: 0 auto; display: block }
+    .gallery-main { width: 100%; height: 200px; border-radius: 10px; object-fit: cover; background: linear-gradient(135deg,#E9D8FD,#ECC94B40); display: flex; align-items: center; justify-content: center; font-size: 50px }
+    .gallery-dots { display: flex; gap: 6px; justify-content: center; margin-top: 8px }
+    .gallery-dot { width: 8px; height: 8px; border-radius: 50%; background: #CBD5E0; cursor: pointer; border: none; padding: 0; transition: all 0.2s }
+    .gallery-dot.active { background: var(--primary); width: 20px; border-radius: 4px }
+    .gallery-thumbs { display: flex; gap: 8px; overflow-x: auto; margin-top: 10px; padding-bottom: 4px }
+    .gallery-thumb { width: 60px; height: 60px; border-radius: 8px; object-fit: cover; cursor: pointer; border: 2px solid transparent; opacity: 0.6; transition: all 0.2s; flex-shrink: 0 }
+    .gallery-thumb.active { border-color: var(--primary); opacity: 1 }
+    .detail-gallery { width: 300px; flex-shrink: 0 }
+    .detail-gallery .gallery-main { height: 360px; font-size: 80px }
+    .image-url-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center }
+    .image-url-row .remove-btn { flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%; border: none; background: #F56565; color: #fff; cursor: pointer; font-size: 14px; line-height: 1 }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script>
+    const API = '/api';
+    function getToken() { return localStorage.getItem('customer_token') || localStorage.getItem('admin_shop_token'); }
+    function isAdminMode() { return !!localStorage.getItem('admin_shop_token'); }
+    let adminToken = null;
+
+    function toast(msg, type = 'success') {
+      const t = document.createElement('div');
+      t.className = `toast toast-${type}`; t.textContent = msg;
+      document.body.appendChild(t);
+      setTimeout(() => t.remove(), 2500);
+    }
+
+    // 画廊组件：返回 HTML 字符串，images 是 URL 数组
+    function productImgHtml(images, fallbackEmoji = '🃏', cls = '') {
+      const imgs = (images || []).filter(u => u && u.trim());
+      if (imgs.length === 0) return `<div class="gallery-main ${cls}">${fallbackEmoji}</div>`;
+      const main = imgs[0];
+      const dots = imgs.length > 1 ? `<div class="gallery-dots">${imgs.map((_,i) => `<span class="gallery-dot ${i===0?'active':''}"></span>`).join('')}</div>` : '';
+      return `<div class="gallery-main ${cls}" style="overflow:hidden"><img src="${main}" style="width:100%;height:100%;object-fit:cover" onerror="this.parentElement.innerHTML='<div style=height:100%;display:flex;align-items:center;justify-content:center;font-size:inherit>${fallbackEmoji}</div>'"></div>${dots}`;
+    }
+    // 详情页画廊（带缩略图切换，用 id 前缀避免冲突）
+    function detailGalleryHtml(images, idPrefix) {
+      const imgs = (images || []).filter(u => u && u.trim());
+      if (imgs.length === 0) return `<div class="gallery-main detail-gallery" style="height:360px;font-size:80px">🃏</div>`;
+      const uid = idPrefix || 'g';
+      return `<div class="detail-gallery">
+        <div class="gallery-main detail-gallery" style="height:360px;overflow:hidden">
+          <img src="${imgs[0]}" id="${uid}_main" style="width:100%;height:100%;object-fit:cover" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2280%22>🃏</text></svg>'">
+        </div>
+        ${imgs.length > 1 ? `<div class="gallery-thumbs">${imgs.map((u,i) => `<img src="${u}" class="gallery-thumb${i===0?' active':''}" onclick="document.getElementById('${uid}_main').src='${u}';this.parentElement.querySelectorAll('.gallery-thumb').forEach(t=>t.classList.remove('active'));this.classList.add('active')" onerror="this.remove()">`).join('')}</div>` : ''}
+      </div>`;
+    }
+
+    async function api(path, options = {}) {
+      const token = isAdminMode() ? localStorage.getItem('admin_shop_token') : localStorage.getItem('customer_token');
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+      const res = await fetch(API + path, { ...options, headers: { ...headers, ...options.headers } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '请求失败');
+      return data;
+    }
+
+    function exitAdmin() {
+      localStorage.removeItem('admin_shop_token');
+      localStorage.removeItem('customer_token');
+      location.hash = '/';
+      location.reload();
+    }
+
+    // ============ 路由 ============
+    function route() {
+      const hash = location.hash.slice(1) || '/';
+
+      // 管理员登录页不需要token
+      if (hash === '/admin/login') {
+        renderAdminLogin();
+        return;
+      }
+
+      if (!getToken()) {
+        renderVerify();
+      } else if (hash === '/' || hash === '') {
+        renderProducts();
+      } else if (hash.startsWith('/product/')) {
+        renderDetail(hash.split('/')[2]);
+      } else if (hash.startsWith('/order/')) {
+        renderOrder(hash.split('/')[2]);
+      } else if (hash === '/success') {
+        renderSuccess();
+      } else {
+        renderProducts();
+      }
+    }
+    window.addEventListener('hashchange', route);
+
+    // ============ 管理员登录 ============
+    function renderAdminLogin() {
+      document.getElementById('app').innerHTML = `
+        <div class="login-page">
+          <div class="login-card">
+            <div class="login-icon">🔐</div>
+            <h2>管理员登录</h2>
+            <p class="subtitle">登录后可管理商城商品</p>
+            <div class="form-group"><label>用户名</label><input class="input" id="adminUser" placeholder="管理员账号"></div>
+            <div class="form-group"><label>密码</label><input class="input" type="password" id="adminPass" placeholder="管理员密码"></div>
+            <button class="btn btn-primary btn-lg w-full" onclick="doAdminLogin()">登录</button>
+            <p class="text-center text-muted mt-2" style="font-size:13px"><a href="#/">← 返回商城</a></p>
+          </div>
+        </div>
+      `;
+    }
+
+    async function doAdminLogin() {
+      const username = document.getElementById('adminUser').value.trim();
+      const password = document.getElementById('adminPass').value.trim();
+      if (!username || !password) return toast('请输入账号和密码', 'error');
+      try {
+        const res = await fetch(API + '/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '登录失败');
+        if (data.user.role !== 'admin') throw new Error('仅管理员可登录');
+        localStorage.setItem('admin_shop_token', data.token);
+        toast('管理员登录成功');
+        setTimeout(() => { location.hash = '/'; }, 500);
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // ============ 邀请码验证页 ============
+    function renderVerify() {
+      const params = new URLSearchParams(location.search);
+      const urlCode = params.get('code');
+      document.getElementById('app').innerHTML = `
+        <div class="login-page">
+          <div class="login-card">
+            <div class="login-icon">🔮</div>
+            <h2>欢迎来到塔罗牌商城</h2>
+            <p class="subtitle">请输入邀请码进入选购</p>
+            <div class="form-group">
+              <label>邀请码</label>
+              <input class="input" id="inviteCode" placeholder="请输入邀请码" value="${urlCode || ''}" style="text-transform:uppercase">
+            </div>
+            <button class="btn btn-primary btn-lg w-full" onclick="doVerify()">进入商城</button>
+            <p class="text-center text-muted mt-2" style="font-size:12px">没有邀请码？请联系您的代理获取</p>
+            <hr style="margin:20px 0;border:none;border-top:1px solid var(--border)">
+            <p class="text-center text-muted" style="font-size:12px"><a href="#/admin/login">管理员入口</a></p>
+          </div>
+        </div>
+      `;
+      if (urlCode) document.getElementById('inviteCode').focus();
+    }
+
+    async function doVerify() {
+      const code = document.getElementById('inviteCode').value.trim().toUpperCase();
+      if (!code) return toast('请输入邀请码', 'error');
+      try {
+        const data = await api('/shop/verify', {
+          method: 'POST',
+          body: JSON.stringify({ invite_code: code })
+        });
+        localStorage.setItem('customer_token', data.token);
+        toast('验证成功，欢迎光临！');
+        setTimeout(() => location.hash = '/', 500);
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // ============ 商品列表 ============
+    async function renderProducts() {
+      const isAdmin = isAdminMode();
+      const adminBar = isAdmin ? `
+        <div class="admin-bar">
+          <span>🔐 管理员模式</span><span class="badge">ADMIN</span>
+          <span style="flex:1"></span>
+          <button class="btn btn-sm btn-ghost" style="color:#fff" onclick="openAddProductModal()">+ 添加商品</button>
+          <button class="btn btn-sm btn-ghost" style="color:#fff" onclick="exitAdmin()">退出管理</button>
+        </div>
+      ` : '';
+
+      document.getElementById('app').innerHTML = adminBar + `
+        <div class="shop-header">
+          <div class="logo">🔮 塔罗牌<span>商城</span></div>
+          <button class="btn btn-ghost" style="color:#fff" onclick="localStorage.removeItem('customer_token');localStorage.removeItem('admin_shop_token');location.reload()">退出</button>
+        </div>
+        <div class="shop-container">
+          <h2 style="margin-bottom:20px;font-size:22px">🃏 精选塔罗牌</h2>
+          <div class="product-grid" id="productGrid">
+            <div class="empty-state"><div class="empty-icon">⏳</div>加载中...</div>
+          </div>
+        </div>
+      `;
+
+      try {
+        const url = isAdmin ? '/admin/products' : '/shop/products';
+        const products = await api(url);
+        const grid = document.getElementById('productGrid');
+        if (products.length === 0) {
+          grid.innerHTML = '<div class="empty-state"><div class="empty-icon">📦</div>暂无商品</div>';
+          return;
+        }
+        grid.innerHTML = products.map(p => {
+          if (isAdmin) {
+            const isDraft = p.status === 'inactive';
+            return `
+              <div class="product-card product-card-admin ${isDraft ? 'draft' : ''}" onclick="${isDraft ? '' : `location.hash='/product/${p.id}'`}">
+                <div class="card-actions">
+                  <button class="btn-icon btn-icon-toggle" onclick="event.stopPropagation();toggleProduct(${p.id},'${p.status}')" title="${isDraft ? '上架' : '下架'}">${isDraft ? '↑' : '↓'}</button>
+                  <button class="btn-icon btn-icon-edit" onclick="event.stopPropagation();openEditProductModal(${p.id})" title="编辑">✎</button>
+                  <button class="btn-icon btn-icon-del" onclick="event.stopPropagation();deleteProduct(${p.id})" title="删除">✕</button>
+                </div>
+                ${productImgHtml(p.images)}
+                <div class="product-body">
+                  <div class="product-name">${p.name}</div>
+                  <div class="product-desc">${p.description || ''}</div>
+                  <div class="flex justify-between items-center">
+                    <div class="product-price">¥${p.price}</div>
+                    <div class="product-stock">${isDraft ? '<span style="color:#E53E3E">已下架</span>' : '库存 ' + p.stock}</div>
+                  </div>
+                </div>
+              </div>
+            `;
+          }
+          return `
+            <div class="product-card" onclick="location.hash='/product/${p.id}'">
+              ${productImgHtml(p.images)}
+              <div class="product-body">
+                <div class="product-name">${p.name}</div>
+                <div class="product-desc">${p.description || ''}</div>
+                <div class="flex justify-between items-center">
+                  <div class="product-price">¥${p.price}</div>
+                  <div class="product-stock">库存 ${p.stock}</div>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } catch (e) {
+        if (e.message.includes('邀请码') || e.message.includes('登录')) {
+          localStorage.removeItem('customer_token'); route();
+        } else {
+          document.getElementById('productGrid').innerHTML = `<div class="empty-state"><div class="empty-icon">❌</div>${e.message}</div>`;
+        }
+      }
+    }
+
+    // ============ 商品详情 ============
+    async function renderDetail(id) {
+      document.getElementById('app').innerHTML = `
+        <div class="shop-header">
+          <div class="logo">🔮 塔罗牌<span>商城</span></div>
+          <button class="btn btn-ghost" style="color:#fff" onclick="${isAdminMode() ? 'exitAdmin()' : "localStorage.removeItem('customer_token');location.reload()"}">退出</button>
+        </div>
+        <div class="shop-container"><div class="empty-state"><div class="empty-icon">⏳</div>加载中...</div></div>
+      `;
+      try {
+        const p = await api('/shop/products/' + id);
+        const detailHtml = (p.detail || '').split('\n').map(line => `<p style="margin-bottom:6px">${line}</p>`).join('');
+        document.getElementById('app').innerHTML = `
+          <div class="shop-header">
+            <div class="logo">🔮 塔罗牌<span>商城</span></div>
+            <button class="btn btn-ghost" style="color:#fff" onclick="localStorage.removeItem('customer_token');location.reload()">退出</button>
+          </div>
+          <div class="shop-container">
+            <a href="#/" style="display:inline-block;margin-bottom:16px">← 返回商品列表</a>
+            <div class="card" style="display:flex;gap:24px;flex-wrap:wrap">
+              ${detailGalleryHtml(p.images, 'det_')}
+              <div style="flex:1;min-width:280px">
+                <h2 style="font-size:24px;margin-bottom:8px">${p.name}</h2>
+                <p class="text-muted mb-2">${p.description || ''}</p>
+                <div class="text-gold" style="font-size:32px;margin-bottom:16px">¥${p.price}</div>
+                <div class="mb-2"><span class="badge ${p.stock > 0 ? 'badge-active' : 'badge-cancelled'}">${p.stock > 0 ? '库存 ' + p.stock : '缺货'}</span></div>
+                <div class="card" style="background:#F7FAFC;padding:16px;margin-bottom:16px">
+                  <h4 style="margin-bottom:8px">商品详情</h4>
+                  ${detailHtml}
+                </div>
+                ${p.stock > 0 ? `<button class="btn btn-primary btn-lg w-full" onclick="location.hash='/order/${p.id}'">立即购买</button>` : '<button class="btn btn-lg w-full" disabled>暂时缺货</button>'}
+              </div>
+            </div>
+          </div>
+        `;
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // ============ 下单页 ============
+    async function renderOrder(id) {
+      document.getElementById('app').innerHTML = `
+        <div class="shop-header"><div class="logo">🔮 塔罗牌<span>商城</span></div>
+          <button class="btn btn-ghost" style="color:#fff" onclick="localStorage.removeItem('customer_token');location.reload()">退出</button>
+        </div>
+        <div class="shop-container"><div class="empty-state"><div class="empty-icon">⏳</div>加载中...</div></div>
+      `;
+      try {
+        const p = await api('/shop/products/' + id);
+        document.getElementById('app').innerHTML = `
+          <div class="shop-header"><div class="logo">🔮 塔罗牌<span>商城</span></div>
+            <button class="btn btn-ghost" style="color:#fff" onclick="localStorage.removeItem('customer_token');location.reload()">退出</button>
+          </div>
+          <div class="shop-container" style="max-width:600px">
+            <a href="#/product/${p.id}" style="display:inline-block;margin-bottom:16px">← 返回商品详情</a>
+            <div class="card">
+              <h2 style="margin-bottom:20px">填写订单信息</h2>
+              <div class="card" style="background:#F7FAFC;margin-bottom:20px;display:flex;gap:12px;align-items:center">
+                <div style="font-size:40px">🃏</div>
+                <div style="flex:1">
+                  <div style="font-weight:700">${p.name}</div>
+                  <div class="text-muted" style="font-size:13px">${p.description || ''}</div>
+                </div>
+                <div class="text-gold" style="font-size:20px">¥${p.price}</div>
+              </div>
+              <div class="form-group">
+                <label>购买数量</label>
+                <div class="flex gap-2 items-center">
+                  <button class="btn btn-outline btn-sm" onclick="changeQty(-1)">-</button>
+                  <input class="input" id="qty" value="1" style="width:80px;text-align:center" readonly>
+                  <button class="btn btn-outline btn-sm" onclick="changeQty(1)">+</button>
+                  <span class="text-muted ml-1" style="margin-left:8px">单价 ¥${p.price}</span>
+                </div>
+              </div>
+              <div class="form-group"><label>收货人姓名 *</label><input class="input" id="customerName" placeholder="请输入收货人姓名"></div>
+              <div class="form-group"><label>联系电话 *</label><input class="input" id="customerPhone" placeholder="请输入手机号码"></div>
+              <div class="form-group"><label>收货地址 *</label><textarea class="textarea" id="customerAddress" placeholder="请输入详细收货地址"></textarea></div>
+              <div class="form-group"><label>备注（选填）</label><textarea class="textarea" id="remark" placeholder="特殊要求请在此备注"></textarea></div>
+              <div class="card" style="background:#F7FAFC;margin-bottom:20px">
+                <div class="flex justify-between" style="margin-bottom:8px"><span class="text-muted">商品金额</span><span>¥${p.price}</span></div>
+                <div class="flex justify-between" style="margin-bottom:8px"><span class="text-muted">数量</span><span id="qtyDisplay">1</span></div>
+                <div class="flex justify-between" style="font-size:18px;font-weight:700;padding-top:8px;border-top:1px solid var(--border)">
+                  <span>合计</span><span class="text-gold" id="totalDisplay">¥${p.price}</span>
+                </div>
+              </div>
+              <button class="btn btn-primary btn-lg w-full" onclick="submitOrder(${p.id}, ${p.price})">确认下单</button>
+              <p class="text-center text-muted mt-2" style="font-size:12px">下单后24小时内发货，快递单号将由代理转发给您</p>
+            </div>
+          </div>
+        `;
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    function changeQty(delta) {
+      const input = document.getElementById('qty');
+      let qty = parseInt(input.value) + delta;
+      if (qty < 1) qty = 1;
+      input.value = qty;
+      document.getElementById('qtyDisplay').textContent = qty;
+    }
+
+    function submitOrder(productId, price) {
+      const qty = parseInt(document.getElementById('qty').value);
+      const customerName = document.getElementById('customerName').value.trim();
+      const customerPhone = document.getElementById('customerPhone').value.trim();
+      const customerAddress = document.getElementById('customerAddress').value.trim();
+      const remark = document.getElementById('remark').value.trim();
+      if (!customerName) return toast('请输入收货人姓名', 'error');
+      if (!customerPhone) return toast('请输入联系电话', 'error');
+      if (!customerAddress) return toast('请输入收货地址', 'error');
+      const btn = event.target;
+      btn.disabled = true; btn.textContent = '提交中...';
+      api('/shop/orders', {
+        method: 'POST',
+        body: JSON.stringify({ product_id: productId, quantity: qty, customer_name: customerName, customer_phone: customerPhone, customer_address: customerAddress, remark })
+      }).then(data => {
+        toast('下单成功！');
+        setTimeout(() => location.hash = '/success', 500);
+      }).catch(e => {
+        toast(e.message, 'error');
+        btn.disabled = false; btn.textContent = '确认下单';
+      });
+    }
+
+    // ============ 下单成功页 ============
+    function renderSuccess() {
+      document.getElementById('app').innerHTML = `
+        <div class="shop-header"><div class="logo">🔮 塔罗牌<span>商城</span></div>
+          <button class="btn btn-ghost" style="color:#fff" onclick="localStorage.removeItem('customer_token');location.reload()">退出</button>
+        </div>
+        <div class="shop-container" style="max-width:500px;text-align:center">
+          <div class="card" style="padding:48px 24px">
+            <div style="font-size:64px;margin-bottom:16px">✅</div>
+            <h2 style="font-size:24px;margin-bottom:12px">下单成功！</h2>
+            <p class="text-muted mb-3">您的订单已提交成功，我们将在24小时内发货。<br>快递单号将由您的代理转发给您，请保持电话畅通。</p>
+            <button class="btn btn-primary btn-lg" onclick="location.hash='/'">继续购物</button>
+          </div>
+        </div>
+      `;
+    }
+
+    // ============ 管理员：商品管理 ============
+    function openAddProductModal() {
+      showProductModal('添加商品', {}, (data) => {
+        api('/admin/products', { method: 'POST', body: JSON.stringify(data) })
+          .then(() => { toast('商品已添加'); closeModal(); renderProducts(); })
+          .catch(e => toast(e.message, 'error'));
+      });
+    }
+
+    function openEditProductModal(id) {
+      api('/shop/products/' + id).then(p => {
+        showProductModal('编辑商品', p, (data) => {
+          api('/admin/products/' + id, { method: 'PUT', body: JSON.stringify(data) })
+            .then(() => { toast('商品已更新'); closeModal(); renderProducts(); })
+            .catch(e => toast(e.message, 'error'));
+        });
+      }).catch(e => toast(e.message, 'error'));
+    }
+
+    function showProductModal(title, defaults, onSave) {
+      const existingImages = defaults.images || (defaults.image ? [defaults.image] : []);
+      if (existingImages.length === 0) existingImages.push('');
+      const modal = document.createElement('div');
+      modal.className = 'modal-overlay';
+      modal.id = 'productModal';
+      const imageRows = existingImages.map((url, i) => `
+        <div class="image-url-row">
+          <input class="input pImgUrl" placeholder="图片链接 ${i+1}" value="${escapeHtml(url)}" style="flex:1">
+          ${i > 0 ? '<button class="remove-btn" onclick="this.parentElement.remove()">×</button>' : ''}
+        </div>
+      `).join('');
+      modal.innerHTML = `
+        <div class="modal" style="max-width:560px">
+          <div class="modal-header"><h3>${title}</h3><button class="btn btn-ghost" onclick="closeModal()">✕</button></div>
+          <div class="modal-body" style="max-height:70vh;overflow-y:auto">
+            <div class="form-group">
+              <label>商品图片URL <span style="font-weight:400;color:var(--text-light)">（可添加多张，第一张为主图）</span></label>
+              <div id="imageUrlList">${imageRows}</div>
+              <button class="btn btn-sm btn-ghost" onclick="addImageRow()" style="margin-top:4px;color:var(--primary)">+ 添加更多图片</button>
+            </div>
+            <div class="form-group">
+              <label>商品名称 *</label>
+              <input class="input" id="pName" placeholder="例如：韦特塔罗牌（经典版）" value="${escapeHtml(defaults.name || '')}">
+            </div>
+            <div class="form-group">
+              <label>简短描述</label>
+              <input class="input" id="pDesc" placeholder="一句话描述商品" value="${escapeHtml(defaults.description || '')}">
+            </div>
+            <div class="flex gap-2" style="display:flex;gap:12px">
+              <div class="form-group" style="flex:1">
+                <label>价格（元）*</label>
+                <input class="input" type="number" id="pPrice" placeholder="128" step="0.01" min="0" value="${defaults.price || ''}">
+              </div>
+              <div class="form-group" style="flex:1">
+                <label>库存数量</label>
+                <input class="input" type="number" id="pStock" placeholder="999" min="0" value="${defaults.stock || 999}">
+              </div>
+            </div>
+            <div class="form-group">
+              <label>商品详情</label>
+              <textarea class="textarea" id="pDetail" placeholder="详细描述，每行一段" rows="5">${escapeHtml(defaults.detail || '')}</textarea>
+            </div>
+            <div class="form-group">
+              <label>上架状态</label>
+              <select class="input" id="pStatus">
+                <option value="active" ${(!defaults.status || defaults.status === 'active') ? 'selected' : ''}>上架</option>
+                <option value="inactive" ${defaults.status === 'inactive' ? 'selected' : ''}>下架（仅管理员可见）</option>
+              </select>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-ghost" onclick="closeModal()">取消</button>
+            <button class="btn btn-primary" id="saveBtn">保存</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      document.getElementById('saveBtn').onclick = () => {
+        const images = Array.from(document.querySelectorAll('.pImgUrl')).map(el => el.value.trim()).filter(u => u);
+        if (images.length === 0) images.push(''); // 至少一个空占位
+        const data = {
+          name: document.getElementById('pName').value.trim(),
+          description: document.getElementById('pDesc').value.trim(),
+          price: parseFloat(document.getElementById('pPrice').value),
+          stock: parseInt(document.getElementById('pStock').value) || 0,
+          images: images.length > 1 || images[0] ? images : [],
+          detail: document.getElementById('pDetail').value.trim(),
+          status: document.getElementById('pStatus').value
+        };
+        if (!data.name || isNaN(data.price)) return toast('请填写商品名称和价格', 'error');
+        onSave(data);
+      };
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function addImageRow() {
+      const list = document.getElementById('imageUrlList');
+      const row = document.createElement('div');
+      row.className = 'image-url-row';
+      const count = list.querySelectorAll('.pImgUrl').length + 1;
+      row.innerHTML = `<input class="input pImgUrl" placeholder="图片链接 ${count}" style="flex:1"><button class="remove-btn" onclick="this.parentElement.remove()">×</button>`;
+      list.appendChild(row);
+    }
+
+    function closeModal() {
+      const m = document.getElementById('productModal');
+      if (m) m.remove();
+    }
+
+    async function toggleProduct(id, status) {
+      try {
+        const res = await api(`/admin/products/${id}/toggle`, { method: 'PUT', body: '{}' });
+        toast(res.status === 'active' ? '已上架' : '已下架');
+        renderProducts();
+      } catch(e) { toast(e.message, 'error'); }
+    }
+
+    async function deleteProduct(id) {
+      if (!confirm('确定要删除这个商品吗？此操作不可恢复。')) return;
+      try {
+        await api(`/admin/products/${id}`, { method: 'DELETE' });
+        toast('已删除'); renderProducts();
+      } catch(e) { toast(e.message, 'error'); }
+    }
+
+    // 启动
+    route();
+  </script>
+</body>
+</html>
